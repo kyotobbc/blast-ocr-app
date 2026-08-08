@@ -21,15 +21,15 @@ def load_ocr():
 
 reader = load_ocr()
 
-# 3. 座標設定（時刻領域含む）
+# 3. 座標設定（時刻を一番最後/右側に配置）
 NUMERIC_AREAS = {
-    "時刻": (525, 45, 960, 115),
     "バットスピード": (0, 855, 355, 995),
     "アッパー度": (355, 855, 710, 995),
     "オンプレーン効率": (710, 855, 1067, 995),
     "加速度": (0, 1185, 355, 1290),
     "スイング時間": (355, 1165, 710, 1285),
     "パワー": (710, 1165, 1067, 1285),
+    "時刻": (525, 45, 960, 115),
 }
 
 
@@ -44,15 +44,11 @@ def fix_numeric_format(val, metric_name):
         cleaned = val_str.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
         
         # 時:分:秒（例: 8:32:05 または 15:48:31）のパターンのみを厳密に抽出
-        # \d{1,2} : 時（1桁〜2桁）
-        # \d{2}   : 分（2桁）
-        # \d{2}   : 秒（2桁）
         match = re.search(r"(\d{1,2}:\d{2}:\d{2})", cleaned)
         if match:
             return match.group(1)
         
         # 万が一コロンがドットやカンマに誤認された場合のレスキュー処理
-        # 例: 8.32.05 や 8,32,05 -> 8:32:05
         alt_cleaned = re.sub(r"[.,;]", ":", cleaned)
         alt_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", alt_cleaned)
         if alt_match:
@@ -171,13 +167,13 @@ if uploaded_files:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
-            # 【1. Excelへ一括コピー（時刻：時:分:秒のみ厳密抽出）】
+            # 【1. Excelへ一括コピー（時刻は一番右端）】
             df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
             tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
             st.markdown("### 📋 Excelへ一括コピー")
             st.write(
-                "下の枠内のデータ（時刻＋数値データ／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
+                "下の枠内のデータ（数値データ＋時刻／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
             )
             st.code(tsv_data, language="text")
 
