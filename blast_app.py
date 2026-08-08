@@ -211,34 +211,53 @@ if uploaded_files:
             st.session_state["parsed_df"] = df
 
 if "parsed_df" in st.session_state:
-    st.subheader("【解析結果一覧・手修正】")
-    st.info("💡 画面上のセルを直接ダブルタップ/ダブルクリックして数値を変更・修正できます。誤検出行は左端を選択して削除できます。")
+    current_df = st.session_state["parsed_df"]
 
-    # 手修正が可能なデータエディタを表示
-    edited_df = st.data_editor(
-        st.session_state["parsed_df"],
-        num_rows="dynamic", # 行の削除や追加を許可
-        use_container_width=True,
-        key="data_editor"
-    )
+    # 判定列に ⚠️ (異常) が含まれているか判定
+    has_anomaly = current_df["判定"].str.contains("⚠️").any()
 
-    # 画面で修正された最新のデータを反映
-    st.markdown("### 📋 Excelへ一括コピー")
-    st.write(
-        "下の枠内のデータ（数値データ＋時刻／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
-    )
+    # --- コンポーネント描画関数 ---
+    def render_editor():
+        st.subheader("【解析結果一覧・手修正】")
+        if has_anomaly:
+            st.warning("⚠️ 異常と思われる値が検出されています。表のセルを直接修正・削除してください。")
+        else:
+            st.info("💡 画面上のセルを直接ダブルタップ/ダブルクリックして数値を変更・修正できます。")
 
-    # Excel出力用（「ファイル名」と「判定」列を除外）
-    export_df = edited_df.drop(columns=["ファイル名", "判定"], errors="ignore")
-    tsv_data = export_df.to_csv(index=False, header=False, sep="\t")
-    
-    st.code(tsv_data, language="text")
+        edited_df = st.data_editor(
+            current_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="data_editor"
+        )
+        return edited_df
 
-    # CSVダウンロードボタン
-    csv_data = edited_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    st.download_button(
-        label="📥 CSVファイルとして保存",
-        data=csv_data,
-        file_name="blast_extracted_data.csv",
-        mime="text/csv",
-    )
+    def render_excel_copy(df_to_export):
+        st.markdown("### 📋 Excelへ一括コピー")
+        st.write(
+            "下の枠内のデータ（数値データ＋時刻／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
+        )
+
+        export_df = df_to_export.drop(columns=["ファイル名", "判定"], errors="ignore")
+        tsv_data = export_df.to_csv(index=False, header=False, sep="\t")
+        
+        st.code(tsv_data, language="text")
+
+        csv_data = df_to_export.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            label="📥 CSVファイルとして保存",
+            data=csv_data,
+            file_name="blast_extracted_data.csv",
+            mime="text/csv",
+        )
+
+    # 異常値の有無によって表示順を動的に切り替え
+    if has_anomaly:
+        # 異常あり：解析結果一覧（手修正）を上、Excelコピーを下
+        latest_df = render_editor()
+        render_excel_copy(latest_df)
+    else:
+        # すべて正常：Excelコピーを上、解析結果一覧（手修正）を下
+        # ※データエディタを後にレンダリングするため、現在のデータフレームを使用
+        render_excel_copy(current_df)
+        render_editor()
