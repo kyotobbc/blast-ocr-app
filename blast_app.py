@@ -21,8 +21,9 @@ def load_ocr():
 
 reader = load_ocr()
 
-# 3. 座標設定
+# 3. 座標設定（時刻を追加）
 NUMERIC_AREAS = {
+    "時刻": (525, 45, 960, 115),
     "バットスピード": (0, 855, 355, 995),
     "アッパー度": (355, 855, 710, 995),
     "オンプレーン効率": (710, 855, 1067, 995),
@@ -38,7 +39,12 @@ def fix_numeric_format(val, metric_name):
         return None
     val_str = str(val).strip()
 
-    if metric_name == "加速度":
+    if metric_name == "時刻":
+        # 時刻用フォーマット調整（記号整形）
+        cleaned = re.sub(r"[^\d:APM\s]", "", val_str, flags=re.IGNORECASE)
+        return cleaned if cleaned else val_str
+
+    elif metric_name == "加速度":
         digits_only = re.sub(r"\D", "", val_str)
         if len(digits_only) == 3:
             return float(f"{digits_only[:2]}.{digits_only[2:]}")
@@ -85,21 +91,32 @@ def process_image_fast(uploaded_file):
         )
         gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
 
-        raw_ocr = reader.readtext(
-            gray,
-            detail=0,
-            allowlist="0123456789.-",
-            paragraph=False,
-            mag_ratio=1.0,
-        )
-        combined_text = "".join(raw_ocr)
-
-        match = re.search(r"-?\d+\.?\d*", combined_text)
-        if match:
-            raw_val = match.group(0)
-            final_val = fix_numeric_format(raw_val, metric_name)
+        # 時刻の場合は英字やコロンも許可する
+        if metric_name == "時刻":
+            raw_ocr = reader.readtext(
+                gray,
+                detail=0,
+                allowlist="0123456789:APMapm ",
+                paragraph=False,
+                mag_ratio=1.0,
+            )
+            combined_text = " ".join(raw_ocr)
+            final_val = fix_numeric_format(combined_text, metric_name)
         else:
-            final_val = None
+            raw_ocr = reader.readtext(
+                gray,
+                detail=0,
+                allowlist="0123456789.-",
+                paragraph=False,
+                mag_ratio=1.0,
+            )
+            combined_text = "".join(raw_ocr)
+            match = re.search(r"-?\d+\.?\d*", combined_text)
+            if match:
+                raw_val = match.group(0)
+                final_val = fix_numeric_format(raw_val, metric_name)
+            else:
+                final_val = None
 
         results[metric_name] = final_val
 
@@ -137,13 +154,13 @@ if uploaded_files:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
-            # 【1. Excelへ一括コピー（一番上に配置）】
+            # 【1. Excelへ一括コピー（時刻含むデータ・ヘッダーなし）】
             df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
             tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
             st.markdown("### 📋 Excelへ一括コピー")
             st.write(
-                "下の枠内の数値データ（ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
+                "下の枠内のデータ（時刻＋数値データ／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
             )
             st.code(tsv_data, language="text")
 
