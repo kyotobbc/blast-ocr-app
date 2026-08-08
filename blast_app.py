@@ -21,7 +21,7 @@ def load_ocr():
 
 reader = load_ocr()
 
-# 3. 座標設定（時刻を追加）
+# 3. 座標設定（時刻領域含む）
 NUMERIC_AREAS = {
     "時刻": (525, 45, 960, 115),
     "バットスピード": (0, 855, 355, 995),
@@ -34,14 +34,30 @@ NUMERIC_AREAS = {
 
 
 def fix_numeric_format(val, metric_name):
-    """桁数ルールに基づく自動補正"""
+    """桁数ルールおよび時刻用正規表現による自動補正"""
     if val is None:
         return None
     val_str = str(val).strip()
 
     if metric_name == "時刻":
-        # 時刻用フォーマット調整（記号整形）
-        cleaned = re.sub(r"[^\d:APM\s]", "", val_str, flags=re.IGNORECASE)
+        # 15:48:31 や 3:48:31 PM や 15:48 などの時刻パターンを末尾から抽出
+        # パターン1: HH:MM:SS (例: 15:48:31)
+        match_hms = re.search(r"\b(\d{1,2}:\d{2}:\d{2})\b", val_str)
+        if match_hms:
+            return match_hms.group(1)
+
+        # パターン2: HH:MM:SS AM/PM (例: 03:48:31 PM)
+        match_ampm = re.search(r"\b(\d{1,2}:\d{2}:\d{2}\s?[AP]M)\b", val_str, re.IGNORECASE)
+        if match_ampm:
+            return match_ampm.group(1)
+
+        # パターン3: HH:MM (例: 15:48)
+        match_hm = re.search(r"\b(\d{1,2}:\d{2})\b", val_str)
+        if match_hm:
+            return match_hm.group(1)
+
+        # どれにもマッチしない場合は数字とコロンのみ残した結果を返す
+        cleaned = re.sub(r"[^\d:]", "", val_str)
         return cleaned if cleaned else val_str
 
     elif metric_name == "加速度":
@@ -91,7 +107,6 @@ def process_image_fast(uploaded_file):
         )
         gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
 
-        # 時刻の場合は英字やコロンも許可する
         if metric_name == "時刻":
             raw_ocr = reader.readtext(
                 gray,
@@ -154,7 +169,7 @@ if uploaded_files:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
-            # 【1. Excelへ一括コピー（時刻含むデータ・ヘッダーなし）】
+            # 【1. Excelへ一括コピー（時刻は末尾の時刻表記のみ抽出）】
             df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
             tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
