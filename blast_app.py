@@ -10,11 +10,11 @@ from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 1. ページの設定
-st.set_page_config(page_title="BLAST画像読み取り", layout="wide")
+st.set_page_config(page_title="BLAST & Rapsodo データ統合", layout="wide")
 
-st.title("BLAST画像読み取り")
+st.title("BLAST & Rapsodo データ統合")
 st.write(
-    "スマホやPCのアルバムから Blast Motion のスクショ画像を複数選択してアップロードしてください。"
+    "Blast Motion のスクショ画像と、必要に応じて Rapsodo の CSV ファイルをアップロードしてください。"
 )
 
 # 2. OCRエンジンの初期化（高速化設定）
@@ -176,11 +176,70 @@ def check_outliers(df):
     return df
 
 
+def merge_rapsodo_data(blast_df, rapsodo_file):
+    """BlastデータとRapsodoのCSVデータを時刻の最近傍で照合して結合"""
+    try:
+        rap_df = pd.read_csv(rapsodo_file)
+    except Exception as e:
+        st.error(f"Rapsodo CSVの読み込みに失敗しました: {e}")
+        return blast_df
+
+    # 列名の正規化（大文字小文字/スペースの揺れを修正）
+    rap_cols = {col.strip().lower(): col for col in rap_df.columns}
+    
+    date_col = rap_cols.get("date")
+    ev_col = rap_cols.get("exitvelocity") or rap_cols.get("exit velocity") or rap_cols.get("exit_velocity")
+    la_col = rap_cols.get("launchangle") or rap_cols.get("launch angle") or rap_cols.get("launch_angle")
+    sd_col = rap_cols.get("spin direct") or rap_cols.get("spin direction") or rap_cols.get("spin_direction") or rap_cols.get("spindirection")
+
+    if not date_col:
+        st.warning("⚠️ RapsodoのCSV内に『Date』列が見つかりませんでした。")
+        return blast_df
+
+    # 時刻変換用の処理
+    rap_df["_dt"] = pd.to_datetime(rap_df[date_col], errors="coerce")
+    
+    # 時間のみのデータだった場合ダミー日付を付与
+    if rap_df["_dt"].isna().all():
+        rap_df["_dt"] = pd.to_datetime("2020-01-01 " + rap_df[date_col].astype(str), errors="coerce")
+
+    # Blast側の時刻変換
+    blast_df["_dt"] = pd.to_datetime("2020-01-01 " + blast_df["時刻"].astype(str), errors="coerce")
+
+    # 結合用初期カラムのセット
+    blast_df["Exit Velocity"] = np.nan
+    blast_df["Launch Angle"] = np.nan
+    blast_df["Spin Direction"] = np.nan
+
+    # 各スイングに対し一番時間の近いRapsodo行を探索
+    valid_rap = rap_df.dropna(subset=["_dt"]).sort_values("_dt")
+
+    if not valid_rap.empty:
+        for idx, row in blast_df.iterrows():
+            b_dt = row["_dt"]
+            if pd.notna(b_dt):
+                # 差の絶対値が最小のインデックスを取得
+                closest_idx = (valid_rap["_dt"] - b_dt).abs().idxmin()
+                closest_row = valid_rap.loc[closest_idx]
+
+                if ev_col and ev_col in closest_row:
+                    blast_df.at[idx, "Exit Velocity"] = closest_row[ev_col]
+                if la_col and la_col in closest_row:
+                    blast_df.at[idx, "Launch Angle"] = closest_row[la_col]
+                if sd_col and sd_col in closest_row:
+                    blast_df.at[idx, "Spin Direction"] = closest_row[sd_col]
+
+    blast_df.drop(columns=["_dt"], inplace=True, errors="ignore")
+    return blast_df
+
+
 def render_summary_metrics(df):
-    """平均値および最高値（ルール別）の集計枠を表示"""
+    """平均値および最高値の集計枠を表示"""
     st.markdown("#### 📊 スイングデータ要約（平均・最高）")
 
     metrics_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
+    if "Exit Velocity" in df.columns:
+        metrics_keys.extend(["Exit Velocity", "Launch Angle", "Spin Direction"])
     
     avg_row = {"区分": "平均値"}
     best_row = {"区分": "最高値"}
@@ -195,14 +254,15 @@ def render_summary_metrics(df):
                 else:
                     avg_row[key] = f"{series.mean():.1f}"
 
-                if key in ["バットスピード", "オンプレーン効率", "加速度", "パワー"]:
+                if key in ["バットスピード", "オンプレーン効率", "加速度", "パワー", "Exit Velocity", "Launch Angle"]:
                     best_row[key] = f"{series.max():.1f}"
                 elif key == "スイング時間":
                     best_row[key] = f"{series.min():.2f}"
                 elif key == "アッパー度":
-                    max_val = series.max()
-                    min_val = series.min()
-                    best_row[key] = f"{max_val:.1f} / {min_val:.1f}"
+                    avg_row[key] = f"{series.mean():.1f}"
+                    best_row[key] = f"{series.max():.1f} / {series.min():.1f}"
+                else:
+                    best_row[key] = "-"
             else:
                 avg_row[key] = "-"
                 best_row[key] = "-"
@@ -231,7 +291,7 @@ def render_time_series_chart(df):
         rows=2, cols=1,
         shared_xaxes=True,
         vertical_spacing=0.15,
-        subplot_titles=("【主要指標】スピード・効率・パワー", "【詳細指標】アッパー度・加速度・スイング時間（拡大表示）"),
+        subplot_titles=("【主要指標】スピード・効率・パワー・Exit Velocity", "【詳細指標】アッパー度・加速度・スイング時間・Launch Angle"),
         specs=[[{"secondary_y": True}], [{"secondary_y": True}]]
     )
 
@@ -241,7 +301,9 @@ def render_time_series_chart(df):
         "アッパー度": "#ff7f0e",
         "加速度": "#9467bd",
         "パワー": "#d62728",
-        "スイング時間": "#17becf"
+        "スイング時間": "#17becf",
+        "Exit Velocity": "#e377c2",
+        "Launch Angle": "#8c564b"
     }
 
     if "バットスピード" in plot_df.columns:
@@ -265,6 +327,19 @@ def render_time_series_chart(df):
                 name="オンプレーン効率(%)",
                 mode="lines+markers",
                 line=dict(width=2, color=colors["オンプレーン効率"]),
+                marker=dict(size=6),
+            ),
+            row=1, col=1, secondary_y=False
+        )
+
+    if "Exit Velocity" in plot_df.columns and plot_df["Exit Velocity"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["Exit Velocity"], errors="coerce"),
+                name="Exit Velocity",
+                mode="lines+markers",
+                line=dict(width=2, color=colors["Exit Velocity"]),
                 marker=dict(size=6),
             ),
             row=1, col=1, secondary_y=False
@@ -309,6 +384,19 @@ def render_time_series_chart(df):
             row=2, col=1, secondary_y=False
         )
 
+    if "Launch Angle" in plot_df.columns and plot_df["Launch Angle"].notna().any():
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["Launch Angle"], errors="coerce"),
+                name="Launch Angle(deg)",
+                mode="lines+markers",
+                line=dict(width=2.5, color=colors["Launch Angle"]),
+                marker=dict(size=7),
+            ),
+            row=2, col=1, secondary_y=False
+        )
+
     if "スイング時間" in plot_df.columns:
         fig.add_trace(
             go.Scatter(
@@ -329,7 +417,7 @@ def render_time_series_chart(df):
         height=650,
     )
 
-    fig.update_yaxes(title_text="スピード / 効率", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="スピード / 効率 / EV", row=1, col=1, secondary_y=False)
     fig.update_yaxes(title_text="パワー", row=1, col=1, secondary_y=True)
 
     fig.update_yaxes(title_text="角度(deg) / 加速度(G)", row=2, col=1, secondary_y=False)
@@ -341,11 +429,21 @@ def render_time_series_chart(df):
 
 
 # --- 画面UI部分 ---
-uploaded_files = st.file_uploader(
-    "スクショ画像を選択（複数選択可）",
-    type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True,
-)
+col1, col2 = st.columns(2)
+
+with col1:
+    uploaded_files = st.file_uploader(
+        "1. BLASTのスクショ画像を選択（複数選択可）",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+    )
+
+with col2:
+    rapsodo_file = st.file_uploader(
+        "2. Rapsodoデータ (CSV) を追加（任意）",
+        type=["csv"],
+        accept_multiple_files=False,
+    )
 
 if uploaded_files:
     if st.button("読み取る"):
@@ -357,7 +455,7 @@ if uploaded_files:
         completed_count = 0
 
         # 並列処理（マルチスレッド）の実行
-        max_workers = min(4, total) # 最大4並列で高速処理
+        max_workers = min(4, total)
         status_text.text(f"🚀 並列処理中 (最大{max_workers}画像を同時解析)...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -380,26 +478,24 @@ if uploaded_files:
 
         if raw_results:
             status_text.text("✅ すべての画像の解析が完了しました！")
-            # 元のアップロード順序に並べ替え
             raw_results.sort(key=lambda x: x["_index"])
             for r in raw_results:
-                del r["_index"]  # 内部インデックスの削除
+                del r["_index"]
 
             df = pd.DataFrame(raw_results)
-            
-            # 異常値チェックを適用
             df = check_outliers(df)
-            
-            # 編集可能テーブル用にセッション状態へ保持
+
+            # Rapsodo CSV が追加されている場合は時間統合を実施
+            if rapsodo_file is not None:
+                df = merge_rapsodo_data(df, rapsodo_file)
+
             st.session_state["parsed_df"] = df
 
 if "parsed_df" in st.session_state:
     current_df = st.session_state["parsed_df"]
 
-    # 判定列に ⚠️ (異常) が含まれているか判定
     has_anomaly = current_df["判定"].str.contains("⚠️").any()
 
-    # --- コンポーネント描画関数 ---
     def render_editor():
         st.subheader("【解析結果一覧・手修正】")
         if has_anomaly:
@@ -407,10 +503,8 @@ if "parsed_df" in st.session_state:
         else:
             st.info("💡 画面上のセルを直接ダブルタップ/ダブルクリックして数値を変更・修正できます。")
 
-        # 1. 表の上部に「平均欄」と「最高欄」を表示
         render_summary_metrics(current_df)
 
-        # 2. 手修正可能なデータエディタ
         edited_df = st.data_editor(
             current_df,
             num_rows="dynamic",
@@ -418,10 +512,8 @@ if "parsed_df" in st.session_state:
             key="data_editor"
         )
         
-        # 編集後の変更をセッションに反映して要約数値を最新に保つ
         st.session_state["parsed_df"] = edited_df
 
-        # 3. 解析結果一覧の下側に時系列グラフを描画
         render_time_series_chart(edited_df)
 
         return edited_df
@@ -441,11 +533,10 @@ if "parsed_df" in st.session_state:
         st.download_button(
             label="📥 CSVファイルとして保存",
             data=csv_data,
-            file_name="blast_extracted_data.csv",
+            file_name="blast_rapsodo_combined_data.csv",
             mime="text/csv",
         )
 
-    # 異常値の有無によって表示順を動的に切り替え
     if has_anomaly:
         latest_df = render_editor()
         render_excel_copy(latest_df)
