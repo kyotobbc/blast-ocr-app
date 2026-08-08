@@ -6,10 +6,10 @@ import pandas as pd
 from PIL import Image
 import streamlit as st
 
-# 1. ページの設定
-st.set_page_config(page_title="Blast Motion OCR App", layout="centered")
+# 1. ページの設定（タイトルの変更）
+st.set_page_config(page_title="BLAST画像読み取り", layout="centered")
 
-st.title("⚾ Blast Motion データ一括読み取り (高速版)")
+st.title("BLAST画像読み取り")
 st.write(
     "スマホやPCのアルバムから Blast Motion のスクショ画像を複数選択してアップロードしてください。"
 )
@@ -17,7 +17,6 @@ st.write(
 # 2. OCRエンジンの初期化（高速化設定）
 @st.cache_resource
 def load_ocr():
-    # allowlistなどを考慮した軽量モデル読み込み
     return easyocr.Reader(["en"], gpu=False, quantize=True)
 
 reader = load_ocr()
@@ -81,19 +80,17 @@ def process_image_fast(uploaded_file):
             continue
 
         h, w = region.shape[:2]
-        # 【高速化1】拡大率を3倍から2倍に変更して計算量を大幅削減
         large = cv2.resize(
             region, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR
         )
         gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
-        
-        # 【高速化2】EasyOCRの文字認識パラメータ調整（batch_size/paragraph等）
+
         raw_ocr = reader.readtext(
-            gray, 
-            detail=0, 
+            gray,
+            detail=0,
             allowlist="0123456789.-",
             paragraph=False,
-            mag_ratio=1.0 # 追加の内部拡大処理をカット
+            mag_ratio=1.0,
         )
         combined_text = "".join(raw_ocr)
 
@@ -117,7 +114,8 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    if st.button("🚀 画像を高速読み取る"):
+    # 表記変更: 「読み取る」のみのボタン
+    if st.button("読み取る"):
         all_data = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -141,18 +139,20 @@ if uploaded_files:
             df = pd.DataFrame(all_data)
 
             st.subheader("【解析結果一覧】")
+            # 画面上には確認用として全列を表示
             st.dataframe(df)
 
-            # Excel用データ (TSV形式)
-            tsv_data = df.to_csv(index=False, sep="\t")
+            # Excel用データ (ファイル名列を除外、項目ヘッダーなし、数値データのみのTSV形式)
+            df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
+            tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
             st.markdown("### 📋 Excelへ一括コピー")
             st.write(
-                "下の枠内のテキストを全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
+                "下の枠内の数値データ（ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
             )
             st.code(tsv_data, language="text")
 
-            # CSVダウンロードボタン
+            # CSVダウンロードボタン（※CSV保存時は元通りファイル名とヘッダーも保持）
             csv_data = df.to_csv(index=False, encoding="utf-8-sig").encode(
                 "utf-8-sig"
             )
