@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # 1. ページの設定
 st.set_page_config(page_title="BLAST画像読み取り", layout="wide")
@@ -187,24 +189,19 @@ def render_summary_metrics(df):
 
     for key in metrics_keys:
         if key in df.columns:
-            # 数値列へ変換して欠損値を除外
             series = pd.to_numeric(df[key], errors="coerce").dropna()
             
             if not series.empty:
-                # 平均値の計算（小数点第1位〜2位で丸め）
                 if key in ["スイング時間"]:
                     avg_row[key] = f"{series.mean():.2f}"
                 else:
                     avg_row[key] = f"{series.mean():.1f}"
 
-                # 最高値のルール別計算
                 if key in ["バットスピード", "オンプレーン効率", "加速度", "パワー"]:
-                    best_row[key] = f"{series.max():.1f}" if key != "加速度" else f"{series.max():.1f}"
+                    best_row[key] = f"{series.max():.1f}"
                 elif key == "スイング時間":
-                    # スイング時間は最も数字が小さいものを最高値とする
                     best_row[key] = f"{series.min():.2f}"
                 elif key == "アッパー度":
-                    # アッパー度は 最大値 / 最小値 の形式
                     max_val = series.max()
                     min_val = series.min()
                     best_row[key] = f"{max_val:.1f} / {min_val:.1f}"
@@ -217,6 +214,81 @@ def render_summary_metrics(df):
 
     summary_df = pd.DataFrame([avg_row, best_row]).set_index("区分")
     st.table(summary_df)
+
+
+def render_time_series_chart(df):
+    """時系列推移グラフ（二重軸で全項目の推移・はじめと終わりの変化を可視化）"""
+    st.markdown("### 📈 時系列データの推移")
+
+    # X軸用のラベル準備（時刻データがあれば時刻、無ければ試技番号）
+    plot_df = df.copy()
+    if "時刻" in plot_df.columns and plot_df["時刻"].notna().any():
+        plot_df["X軸ラベル"] = plot_df.apply(
+            lambda r: f"{r.name + 1}回目 ({r['時刻']})" if pd.notna(r["時刻"]) else f"{r.name + 1}回目",
+            axis=1
+        )
+    else:
+        plot_df["X軸ラベル"] = [f"{i + 1}回目" for i in range(len(plot_df))]
+
+    # 二重軸グラフ作成
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # 各指針のカラー定義
+    colors = {
+        "バットスピード": "#1f77b4",   # 青
+        "オンプレーン効率": "#2ca02c", # 緑
+        "アッパー度": "#ff7f0e",       # オレンジ
+        "加速度": "#9467bd",           # 紫
+        "パワー": "#d62728",           # 赤
+        "スイング時間": "#17becf"       # シアン
+    }
+
+    # 左軸系（大きな数値）
+    left_metrics = ["バットスピード", "オンプレーン効率", "アッパー度", "加速度"]
+    for metric in left_metrics:
+        if metric in plot_df.columns:
+            y_vals = pd.to_numeric(plot_df[metric], errors="coerce")
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["X軸ラベル"],
+                    y=y_vals,
+                    name=metric,
+                    mode="lines+markers",
+                    line=dict(width=2, color=colors.get(metric)),
+                    marker=dict(size=7),
+                ),
+                secondary_y=False,
+            )
+
+    # 右軸系（小さな数値：スイング時間・パワー）
+    right_metrics = ["パワー", "スイング時間"]
+    for metric in right_metrics:
+        if metric in plot_df.columns:
+            y_vals = pd.to_numeric(plot_df[metric], errors="coerce")
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df["X軸ラベル"],
+                    y=y_vals,
+                    name=f"{metric} (右軸)",
+                    mode="lines+markers",
+                    line=dict(width=2, dash="dash" if metric == "スイング時間" else "solid", color=colors.get(metric)),
+                    marker=dict(size=7),
+                ),
+                secondary_y=True,
+            )
+
+    fig.update_layout(
+        xaxis_title="スイング順 (時刻)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=450,
+    )
+
+    fig.update_yaxes(title_text="数値 (スピード/効率/角度/加速度)", secondary_y=False)
+    fig.update_yaxes(title_text="数値 (パワー / スイング時間)", secondary_y=True)
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # --- 画面UI部分 ---
@@ -283,6 +355,10 @@ if "parsed_df" in st.session_state:
         
         # 編集後の変更をセッションに反映して要約数値を最新に保つ
         st.session_state["parsed_df"] = edited_df
+
+        # 3. 解析結果一覧の下側に時系列グラフを描画
+        render_time_series_chart(edited_df)
+
         return edited_df
 
     def render_excel_copy(df_to_export):
