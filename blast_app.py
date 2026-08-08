@@ -34,31 +34,31 @@ NUMERIC_AREAS = {
 
 
 def fix_numeric_format(val, metric_name):
-    """桁数ルールおよび時刻用正規表現による自動補正"""
+    """桁数ルールおよび時刻専用（時:分:秒）抽出による精度向上ロジック"""
     if val is None:
         return None
     val_str = str(val).strip()
 
     if metric_name == "時刻":
-        # 15:48:31 や 3:48:31 PM や 15:48 などの時刻パターンを末尾から抽出
-        # パターン1: HH:MM:SS (例: 15:48:31)
-        match_hms = re.search(r"\b(\d{1,2}:\d{2}:\d{2})\b", val_str)
-        if match_hms:
-            return match_hms.group(1)
+        # OCR誤認識の文字補正 (O->0, I/l->1, S->5 などの代表的な置換)
+        cleaned = val_str.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
+        
+        # 時:分:秒（例: 8:32:05 または 15:48:31）のパターンのみを厳密に抽出
+        # \d{1,2} : 時（1桁〜2桁）
+        # \d{2}   : 分（2桁）
+        # \d{2}   : 秒（2桁）
+        match = re.search(r"(\d{1,2}:\d{2}:\d{2})", cleaned)
+        if match:
+            return match.group(1)
+        
+        # 万が一コロンがドットやカンマに誤認された場合のレスキュー処理
+        # 例: 8.32.05 や 8,32,05 -> 8:32:05
+        alt_cleaned = re.sub(r"[.,;]", ":", cleaned)
+        alt_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", alt_cleaned)
+        if alt_match:
+            return alt_match.group(1)
 
-        # パターン2: HH:MM:SS AM/PM (例: 03:48:31 PM)
-        match_ampm = re.search(r"\b(\d{1,2}:\d{2}:\d{2}\s?[AP]M)\b", val_str, re.IGNORECASE)
-        if match_ampm:
-            return match_ampm.group(1)
-
-        # パターン3: HH:MM (例: 15:48)
-        match_hm = re.search(r"\b(\d{1,2}:\d{2})\b", val_str)
-        if match_hm:
-            return match_hm.group(1)
-
-        # どれにもマッチしない場合は数字とコロンのみ残した結果を返す
-        cleaned = re.sub(r"[^\d:]", "", val_str)
-        return cleaned if cleaned else val_str
+        return None
 
     elif metric_name == "加速度":
         digits_only = re.sub(r"\D", "", val_str)
@@ -88,7 +88,7 @@ def fix_numeric_format(val, metric_name):
 
 
 def process_image_fast(uploaded_file):
-    """高速化版の画像解析処理"""
+    """精度補正を加えた画像解析処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
 
@@ -102,22 +102,24 @@ def process_image_fast(uploaded_file):
             continue
 
         h, w = region.shape[:2]
-        large = cv2.resize(
-            region, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR
-        )
-        gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
 
         if metric_name == "時刻":
+            # 時刻領域は鮮明度を上げるため3倍にリサイズして二値化
+            large = cv2.resize(region, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
+            gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
             raw_ocr = reader.readtext(
-                gray,
+                thresh,
                 detail=0,
-                allowlist="0123456789:APMapm ",
+                allowlist="0123456789:.,oOIilS ",
                 paragraph=False,
-                mag_ratio=1.0,
             )
-            combined_text = " ".join(raw_ocr)
+            combined_text = "".join(raw_ocr)
             final_val = fix_numeric_format(combined_text, metric_name)
         else:
+            large = cv2.resize(region, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
+            gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
             raw_ocr = reader.readtext(
                 gray,
                 detail=0,
@@ -169,7 +171,7 @@ if uploaded_files:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
-            # 【1. Excelへ一括コピー（時刻は末尾の時刻表記のみ抽出）】
+            # 【1. Excelへ一括コピー（時刻：時:分:秒のみ厳密抽出）】
             df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
             tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
