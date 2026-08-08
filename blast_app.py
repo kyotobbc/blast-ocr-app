@@ -9,15 +9,16 @@ import streamlit as st
 # 1. ページの設定
 st.set_page_config(page_title="Blast Motion OCR App", layout="centered")
 
-st.title("⚾ Blast Motion データ一括読み取り")
+st.title("⚾ Blast Motion データ一括読み取り (高速版)")
 st.write(
     "スマホやPCのアルバムから Blast Motion のスクショ画像を複数選択してアップロードしてください。"
 )
 
-# 2. OCRエンジンの初期化（キャッシング）
+# 2. OCRエンジンの初期化（高速化設定）
 @st.cache_resource
 def load_ocr():
-    return easyocr.Reader(["en"], gpu=False)
+    # allowlistなどを考慮した軽量モデル読み込み
+    return easyocr.Reader(["en"], gpu=False, quantize=True)
 
 reader = load_ocr()
 
@@ -65,8 +66,8 @@ def fix_numeric_format(val, metric_name):
             return val
 
 
-def process_image(uploaded_file):
-    """アップロード画像を安全に読み込んで解析"""
+def process_image_fast(uploaded_file):
+    """高速化版の画像解析処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
 
@@ -80,15 +81,20 @@ def process_image(uploaded_file):
             continue
 
         h, w = region.shape[:2]
+        # 【高速化1】拡大率を3倍から2倍に変更して計算量を大幅削減
         large = cv2.resize(
-            region, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC
+            region, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR
         )
         gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
-        _, thresh = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        
+        # 【高速化2】EasyOCRの文字認識パラメータ調整（batch_size/paragraph等）
+        raw_ocr = reader.readtext(
+            gray, 
+            detail=0, 
+            allowlist="0123456789.-",
+            paragraph=False,
+            mag_ratio=1.0 # 追加の内部拡大処理をカット
         )
-
-        raw_ocr = reader.readtext(thresh, detail=0, allowlist="0123456789.-")
         combined_text = "".join(raw_ocr)
 
         match = re.search(r"-?\d+\.?\d*", combined_text)
@@ -111,43 +117,42 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    if st.button("🚀 画像を読み取る"):
+    if st.button("🚀 画像を高速読み取る"):
         all_data = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
+        total = len(uploaded_files)
         for i, file in enumerate(uploaded_files):
-            status_text.text(f"解析中 ({i+1}/{len(uploaded_files)}): {file.name}")
+            status_text.text(f"解析中 ({i+1}/{total}): {file.name}")
 
             try:
-                data = process_image(file)
+                data = process_image_fast(file)
                 all_data.append(data)
             except Exception as e:
                 st.error(
                     f"ファイル '{file.name}' の処理中にエラーが発生しました: {e}"
                 )
 
-            progress_bar.progress((i + 1) / len(uploaded_files))
+            progress_bar.progress((i + 1) / total)
 
         if all_data:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
             st.subheader("【解析結果一覧】")
-            # 1. 画面上で一覧表を表示（直接マウスでコピーも可能）
             st.dataframe(df)
 
-            # 2. Excel貼り付け用（TSV形式）テキスト領域の作成
-            # タブ区切り（TSV）にするとExcelに直接綺麗に貼り付けできます
+            # Excel用データ (TSV形式)
             tsv_data = df.to_csv(index=False, sep="\t")
 
             st.markdown("### 📋 Excelへ一括コピー")
             st.write(
-                "下の枠内のテキストを全選択してコピー（Ctrl+C または スマホの長押し全選択）し、Excelのセルにそのまま貼り付けてください（`Ctrl+V`）。"
+                "下の枠内のテキストを全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
             )
             st.code(tsv_data, language="text")
 
-            # 3. CSVダウンロードボタンも併置
+            # CSVダウンロードボタン
             csv_data = df.to_csv(index=False, encoding="utf-8-sig").encode(
                 "utf-8-sig"
             )
