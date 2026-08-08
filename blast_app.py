@@ -7,6 +7,7 @@ from PIL import Image
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 1. ページの設定
 st.set_page_config(page_title="BLAST画像読み取り", layout="wide")
@@ -91,12 +92,12 @@ def fix_numeric_format(val, metric_name):
             return val
 
 
-def process_image_fast(uploaded_file):
-    """画像解析処理"""
+def process_image_fast(uploaded_file, index):
+    """画像解析処理（並列処理用にインデックスを保持）"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
 
-    results = {"ファイル名": uploaded_file.name}
+    results = {"_index": index, "ファイル名": uploaded_file.name}
 
     for metric_name, (left, top, right, bottom) in NUMERIC_AREAS.items():
         region = open_cv_full[top:bottom, left:right]
@@ -150,15 +151,12 @@ def check_outliers(df):
     for idx, row in df.iterrows():
         reasons = []
 
-        # 1. 範囲チェック & 2. 標準偏差チェック
         for metric, (min_val, max_val) in METRIC_RANGES.items():
             val = row.get(metric)
             if pd.notna(val) and isinstance(val, (int, float)):
-                # 想定範囲外チェック
                 if val < min_val or val > max_val:
                     reasons.append(f"{metric}範囲外({val})")
 
-                # 標準偏差(3σ)チェック (データ数が4件以上ある場合)
                 col_data = pd.to_numeric(df[metric], errors="coerce").dropna()
                 if len(col_data) >= 4:
                     mean = col_data.mean()
@@ -217,7 +215,7 @@ def render_summary_metrics(df):
 
 
 def render_time_series_chart(df):
-    """時系列推移グラフ（上下2段構成で微小変化を強調）"""
+    """時系列推移グラフ"""
     st.markdown("### 📈 時系列データの推移")
 
     plot_df = df.copy()
@@ -229,7 +227,6 @@ def render_time_series_chart(df):
     else:
         plot_df["X軸ラベル"] = [f"{i + 1}回目" for i in range(len(plot_df))]
 
-    # 2行1列のサブプロット（上下2段）を作成
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -239,15 +236,14 @@ def render_time_series_chart(df):
     )
 
     colors = {
-        "バットスピード": "#1f77b4",   # 青
-        "オンプレーン効率": "#2ca02c", # 緑
-        "アッパー度": "#ff7f0e",       # オレンジ
-        "加速度": "#9467bd",           # 紫
-        "パワー": "#d62728",           # 赤
-        "スイング時間": "#17becf"       # シアン
+        "バットスピード": "#1f77b4",
+        "オンプレーン効率": "#2ca02c",
+        "アッパー度": "#ff7f0e",
+        "加速度": "#9467bd",
+        "パワー": "#d62728",
+        "スイング時間": "#17becf"
     }
 
-    # ---------------- 上段：スピード、効率、パワー ----------------
     if "バットスピード" in plot_df.columns:
         fig.add_trace(
             go.Scatter(
@@ -287,7 +283,6 @@ def render_time_series_chart(df):
             row=1, col=1, secondary_y=True
         )
 
-    # ---------------- 下段：アッパー度、加速度、スイング時間（細かな変化の強調） ----------------
     if "アッパー度" in plot_df.columns:
         fig.add_trace(
             go.Scatter(
@@ -327,7 +322,6 @@ def render_time_series_chart(df):
             row=2, col=1, secondary_y=True
         )
 
-    # レイアウト調整
     fig.update_layout(
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="right", x=1),
@@ -335,7 +329,6 @@ def render_time_series_chart(df):
         height=650,
     )
 
-    # 軸タイトルの設定
     fig.update_yaxes(title_text="スピード / 効率", row=1, col=1, secondary_y=False)
     fig.update_yaxes(title_text="パワー", row=1, col=1, secondary_y=True)
 
@@ -356,27 +349,43 @@ uploaded_files = st.file_uploader(
 
 if uploaded_files:
     if st.button("読み取る"):
-        all_data = []
+        raw_results = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         total = len(uploaded_files)
-        for i, file in enumerate(uploaded_files):
-            status_text.text(f"解析中 ({i+1}/{total}): {file.name}")
+        completed_count = 0
 
-            try:
-                data = process_image_fast(file)
-                all_data.append(data)
-            except Exception as e:
-                st.error(
-                    f"ファイル '{file.name}' の処理中にエラーが発生しました: {e}"
-                )
+        # 並列処理（マルチスレッド）の実行
+        max_workers = min(4, total) # 最大4並列で高速処理
+        status_text.text(f"🚀 並列処理中 (最大{max_workers}画像を同時解析)...")
 
-            progress_bar.progress((i + 1) / total)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {
+                executor.submit(process_image_fast, file, idx): file
+                for idx, file in enumerate(uploaded_files)
+            }
 
-        if all_data:
+            for future in as_completed(future_to_file):
+                file = future_to_file[future]
+                try:
+                    data = future.result()
+                    raw_results.append(data)
+                except Exception as e:
+                    st.error(f"ファイル '{file.name}' の処理中にエラーが発生しました: {e}")
+
+                completed_count += 1
+                progress_bar.progress(completed_count / total)
+                status_text.text(f"解析完了: {completed_count}/{total} 枚")
+
+        if raw_results:
             status_text.text("✅ すべての画像の解析が完了しました！")
-            df = pd.DataFrame(all_data)
+            # 元のアップロード順序に並べ替え
+            raw_results.sort(key=lambda x: x["_index"])
+            for r in raw_results:
+                del r["_index"]  # 内部インデックスの削除
+
+            df = pd.DataFrame(raw_results)
             
             # 異常値チェックを適用
             df = check_outliers(df)
