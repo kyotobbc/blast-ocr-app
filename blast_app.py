@@ -169,8 +169,54 @@ def check_outliers(df):
         else:
             status_list.append("✅ 正常")
 
-    df.insert(1, "判定", status_list)
+    if "判定" in df.columns:
+        df["判定"] = status_list
+    else:
+        df.insert(1, "判定", status_list)
     return df
+
+
+def render_summary_metrics(df):
+    """平均値および最高値（ルール別）の集計枠を表示"""
+    st.markdown("#### 📊 スイングデータ要約（平均・最高）")
+
+    metrics_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
+    
+    avg_row = {"区分": "平均値"}
+    best_row = {"区分": "最高値"}
+
+    for key in metrics_keys:
+        if key in df.columns:
+            # 数値列へ変換して欠損値を除外
+            series = pd.to_numeric(df[key], errors="coerce").dropna()
+            
+            if not series.empty:
+                # 平均値の計算（小数点第1位〜2位で丸め）
+                if key in ["スイング時間"]:
+                    avg_row[key] = f"{series.mean():.2f}"
+                else:
+                    avg_row[key] = f"{series.mean():.1f}"
+
+                # 最高値のルール別計算
+                if key in ["バットスピード", "オンプレーン効率", "加速度", "パワー"]:
+                    best_row[key] = f"{series.max():.1f}" if key != "加速度" else f"{series.max():.1f}"
+                elif key == "スイング時間":
+                    # スイング時間は最も数字が小さいものを最高値とする
+                    best_row[key] = f"{series.min():.2f}"
+                elif key == "アッパー度":
+                    # アッパー度は 最大値 / 最小値 の形式
+                    max_val = series.max()
+                    min_val = series.min()
+                    best_row[key] = f"{max_val:.1f} / {min_val:.1f}"
+            else:
+                avg_row[key] = "-"
+                best_row[key] = "-"
+        else:
+            avg_row[key] = "-"
+            best_row[key] = "-"
+
+    summary_df = pd.DataFrame([avg_row, best_row]).set_index("区分")
+    st.table(summary_df)
 
 
 # --- 画面UI部分 ---
@@ -224,12 +270,19 @@ if "parsed_df" in st.session_state:
         else:
             st.info("💡 画面上のセルを直接ダブルタップ/ダブルクリックして数値を変更・修正できます。")
 
+        # 1. 表の上部に「平均欄」と「最高欄」を表示
+        render_summary_metrics(current_df)
+
+        # 2. 手修正可能なデータエディタ
         edited_df = st.data_editor(
             current_df,
             num_rows="dynamic",
             use_container_width=True,
             key="data_editor"
         )
+        
+        # 編集後の変更をセッションに反映して要約数値を最新に保つ
+        st.session_state["parsed_df"] = edited_df
         return edited_df
 
     def render_excel_copy(df_to_export):
@@ -253,11 +306,8 @@ if "parsed_df" in st.session_state:
 
     # 異常値の有無によって表示順を動的に切り替え
     if has_anomaly:
-        # 異常あり：解析結果一覧（手修正）を上、Excelコピーを下
         latest_df = render_editor()
         render_excel_copy(latest_df)
     else:
-        # すべて正常：Excelコピーを上、解析結果一覧（手修正）を下
-        # ※データエディタを後にレンダリングするため、現在のデータフレームを使用
         render_excel_copy(current_df)
         render_editor()
