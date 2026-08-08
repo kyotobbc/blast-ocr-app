@@ -114,7 +114,6 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    # 表記変更: 「読み取る」のみのボタン
     if st.button("読み取る"):
         all_data = []
         progress_bar = st.progress(0)
@@ -138,11 +137,7 @@ if uploaded_files:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
 
-            st.subheader("【解析結果一覧】")
-            # 画面上には確認用として全列を表示
-            st.dataframe(df)
-
-            # Excel用データ (ファイル名列を除外、項目ヘッダーなし、数値データのみのTSV形式)
+            # 【1. Excelへ一括コピー（一番上に配置）】
             df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
             tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
 
@@ -152,7 +147,11 @@ if uploaded_files:
             )
             st.code(tsv_data, language="text")
 
-            # CSVダウンロードボタン（※CSV保存時は元通りファイル名とヘッダーも保持）
+            # 【2. 解析結果一覧（テーブル表示）】
+            st.subheader("【解析結果一覧】")
+            st.dataframe(df)
+
+            # 【3. CSVダウンロードボタン】
             csv_data = df.to_csv(index=False, encoding="utf-8-sig").encode(
                 "utf-8-sig"
             )
