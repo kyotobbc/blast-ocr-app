@@ -217,10 +217,9 @@ def render_summary_metrics(df):
 
 
 def render_time_series_chart(df):
-    """時系列推移グラフ（二重軸で全項目の推移・はじめと終わりの変化を可視化）"""
+    """時系列推移グラフ（上下2段構成で微小変化を強調）"""
     st.markdown("### 📈 時系列データの推移")
 
-    # X軸用のラベル準備（時刻データがあれば時刻、無ければ試技番号）
     plot_df = df.copy()
     if "時刻" in plot_df.columns and plot_df["時刻"].notna().any():
         plot_df["X軸ラベル"] = plot_df.apply(
@@ -230,10 +229,15 @@ def render_time_series_chart(df):
     else:
         plot_df["X軸ラベル"] = [f"{i + 1}回目" for i in range(len(plot_df))]
 
-    # 二重軸グラフ作成
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    # 2行1列のサブプロット（上下2段）を作成
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.15,
+        subplot_titles=("【主要指標】スピード・効率・パワー", "【詳細指標】アッパー度・加速度・スイング時間（拡大表示）"),
+        specs=[[{"secondary_y": True}], [{"secondary_y": True}]]
+    )
 
-    # 各指針のカラー定義
     colors = {
         "バットスピード": "#1f77b4",   # 青
         "オンプレーン効率": "#2ca02c", # 緑
@@ -243,50 +247,102 @@ def render_time_series_chart(df):
         "スイング時間": "#17becf"       # シアン
     }
 
-    # 左軸系（大きな数値）
-    left_metrics = ["バットスピード", "オンプレーン効率", "アッパー度", "加速度"]
-    for metric in left_metrics:
-        if metric in plot_df.columns:
-            y_vals = pd.to_numeric(plot_df[metric], errors="coerce")
-            fig.add_trace(
-                go.Scatter(
-                    x=plot_df["X軸ラベル"],
-                    y=y_vals,
-                    name=metric,
-                    mode="lines+markers",
-                    line=dict(width=2, color=colors.get(metric)),
-                    marker=dict(size=7),
-                ),
-                secondary_y=False,
-            )
+    # ---------------- 上段：スピード、効率、パワー ----------------
+    if "バットスピード" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["バットスピード"], errors="coerce"),
+                name="バットスピード(km/h)",
+                mode="lines+markers",
+                line=dict(width=2, color=colors["バットスピード"]),
+                marker=dict(size=6),
+            ),
+            row=1, col=1, secondary_y=False
+        )
 
-    # 右軸系（小さな数値：スイング時間・パワー）
-    right_metrics = ["パワー", "スイング時間"]
-    for metric in right_metrics:
-        if metric in plot_df.columns:
-            y_vals = pd.to_numeric(plot_df[metric], errors="coerce")
-            fig.add_trace(
-                go.Scatter(
-                    x=plot_df["X軸ラベル"],
-                    y=y_vals,
-                    name=f"{metric} (右軸)",
-                    mode="lines+markers",
-                    line=dict(width=2, dash="dash" if metric == "スイング時間" else "solid", color=colors.get(metric)),
-                    marker=dict(size=7),
-                ),
-                secondary_y=True,
-            )
+    if "オンプレーン効率" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["オンプレーン効率"], errors="coerce"),
+                name="オンプレーン効率(%)",
+                mode="lines+markers",
+                line=dict(width=2, color=colors["オンプレーン効率"]),
+                marker=dict(size=6),
+            ),
+            row=1, col=1, secondary_y=False
+        )
 
+    if "パワー" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["パワー"], errors="coerce"),
+                name="パワー(Kw) [右軸]",
+                mode="lines+markers",
+                line=dict(width=2, dash="dot", color=colors["パワー"]),
+                marker=dict(size=6),
+            ),
+            row=1, col=1, secondary_y=True
+        )
+
+    # ---------------- 下段：アッパー度、加速度、スイング時間（細かな変化の強調） ----------------
+    if "アッパー度" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["アッパー度"], errors="coerce"),
+                name="アッパー度(deg)",
+                mode="lines+markers",
+                line=dict(width=2.5, color=colors["アッパー度"]),
+                marker=dict(size=7),
+            ),
+            row=2, col=1, secondary_y=False
+        )
+
+    if "加速度" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["加速度"], errors="coerce"),
+                name="加速度(G)",
+                mode="lines+markers",
+                line=dict(width=2.5, color=colors["加速度"]),
+                marker=dict(size=7),
+            ),
+            row=2, col=1, secondary_y=False
+        )
+
+    if "スイング時間" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["X軸ラベル"],
+                y=pd.to_numeric(plot_df["スイング時間"], errors="coerce"),
+                name="スイング時間(sec) [右軸]",
+                mode="lines+markers",
+                line=dict(width=2.5, dash="dash", color=colors["スイング時間"]),
+                marker=dict(size=7),
+            ),
+            row=2, col=1, secondary_y=True
+        )
+
+    # レイアウト調整
     fig.update_layout(
-        xaxis_title="スイング順 (時刻)",
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=50, b=20),
-        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="right", x=1),
+        margin=dict(l=20, r=20, t=60, b=20),
+        height=650,
     )
 
-    fig.update_yaxes(title_text="数値 (スピード/効率/角度/加速度)", secondary_y=False)
-    fig.update_yaxes(title_text="数値 (パワー / スイング時間)", secondary_y=True)
+    # 軸タイトルの設定
+    fig.update_yaxes(title_text="スピード / 効率", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="パワー", row=1, col=1, secondary_y=True)
+
+    fig.update_yaxes(title_text="角度(deg) / 加速度(G)", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="スイング時間(sec)", row=2, col=1, secondary_y=True)
+
+    fig.update_xaxes(title_text="スイング順 (時刻)", row=2, col=1)
 
     st.plotly_chart(fig, use_container_width=True)
 
