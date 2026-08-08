@@ -6,8 +6,8 @@ import pandas as pd
 from PIL import Image
 import streamlit as st
 
-# 1. ページの設定（タイトルの変更）
-st.set_page_config(page_title="BLAST画像読み取り", layout="centered")
+# 1. ページの設定
+st.set_page_config(page_title="BLAST画像読み取り", layout="wide")
 
 st.title("BLAST画像読み取り")
 st.write(
@@ -32,23 +32,29 @@ NUMERIC_AREAS = {
     "時刻": (525, 45, 960, 115),
 }
 
+# 4. 各指標の現実的な想定範囲（下限, 上限）
+METRIC_RANGES = {
+    "バットスピード": (30.0, 170.0),
+    "アッパー度": (-30.0, 45.0),
+    "オンプレーン効率": (20.0, 100.0),
+    "加速度": (3.0, 35.0),
+    "スイング時間": (0.08, 0.45),
+    "パワー": (0.5, 12.0),
+}
+
 
 def fix_numeric_format(val, metric_name):
-    """桁数ルールおよび時刻専用（時:分:秒）抽出による精度向上ロジック"""
+    """桁数ルールおよび時刻専用抽出ロジック"""
     if val is None:
         return None
     val_str = str(val).strip()
 
     if metric_name == "時刻":
-        # OCR誤認識の文字補正 (O->0, I/l->1, S->5 などの代表的な置換)
         cleaned = val_str.replace("O", "0").replace("o", "0").replace("I", "1").replace("l", "1")
-        
-        # 時:分:秒（例: 8:32:05 または 15:48:31）のパターンのみを厳密に抽出
         match = re.search(r"(\d{1,2}:\d{2}:\d{2})", cleaned)
         if match:
             return match.group(1)
         
-        # 万が一コロンがドットやカンマに誤認された場合のレスキュー処理
         alt_cleaned = re.sub(r"[.,;]", ":", cleaned)
         alt_match = re.search(r"(\d{1,2}:\d{2}:\d{2})", alt_cleaned)
         if alt_match:
@@ -84,7 +90,7 @@ def fix_numeric_format(val, metric_name):
 
 
 def process_image_fast(uploaded_file):
-    """精度補正を加えた画像解析処理"""
+    """画像解析処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
 
@@ -100,7 +106,6 @@ def process_image_fast(uploaded_file):
         h, w = region.shape[:2]
 
         if metric_name == "時刻":
-            # 時刻領域は鮮明度を上げるため3倍にリサイズして二値化
             large = cv2.resize(region, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
             gray = cv2.cvtColor(large, cv2.COLOR_RGB2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -136,6 +141,38 @@ def process_image_fast(uploaded_file):
     return results
 
 
+def check_outliers(df):
+    """標準偏差(3σ)および設定範囲チェックによる異常値フラグ設定"""
+    status_list = []
+
+    for idx, row in df.iterrows():
+        reasons = []
+
+        # 1. 範囲チェック & 2. 標準偏差チェック
+        for metric, (min_val, max_val) in METRIC_RANGES.items():
+            val = row.get(metric)
+            if pd.notna(val) and isinstance(val, (int, float)):
+                # 想定範囲外チェック
+                if val < min_val or val > max_val:
+                    reasons.append(f"{metric}範囲外({val})")
+
+                # 標準偏差(3σ)チェック (データ数が4件以上ある場合)
+                col_data = pd.to_numeric(df[metric], errors="coerce").dropna()
+                if len(col_data) >= 4:
+                    mean = col_data.mean()
+                    std = col_data.std()
+                    if std > 0 and abs(val - mean) > 3 * std:
+                        reasons.append(f"{metric}外れ値({val})")
+
+        if reasons:
+            status_list.append("⚠️ " + ", ".join(reasons))
+        else:
+            status_list.append("✅ 正常")
+
+    df.insert(1, "判定", status_list)
+    return df
+
+
 # --- 画面UI部分 ---
 uploaded_files = st.file_uploader(
     "スクショ画像を選択（複数選択可）",
@@ -166,28 +203,42 @@ if uploaded_files:
         if all_data:
             status_text.text("✅ すべての画像の解析が完了しました！")
             df = pd.DataFrame(all_data)
+            
+            # 異常値チェックを適用
+            df = check_outliers(df)
+            
+            # 編集可能テーブル用にセッション状態へ保持
+            st.session_state["parsed_df"] = df
 
-            # 【1. Excelへ一括コピー（時刻は一番右端）】
-            df_for_excel = df.drop(columns=["ファイル名"], errors="ignore")
-            tsv_data = df_for_excel.to_csv(index=False, header=False, sep="\t")
+if "parsed_df" in st.session_state:
+    st.subheader("【解析結果一覧・手修正】")
+    st.info("💡 画面上のセルを直接ダブルタップ/ダブルクリックして数値を変更・修正できます。誤検出行は左端を選択して削除できます。")
 
-            st.markdown("### 📋 Excelへ一括コピー")
-            st.write(
-                "下の枠内のデータ（数値データ＋時刻／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
-            )
-            st.code(tsv_data, language="text")
+    # 手修正が可能なデータエディタを表示
+    edited_df = st.data_editor(
+        st.session_state["parsed_df"],
+        num_rows="dynamic", # 行の削除や追加を許可
+        use_container_width=True,
+        key="data_editor"
+    )
 
-            # 【2. 解析結果一覧（テーブル表示）】
-            st.subheader("【解析結果一覧】")
-            st.dataframe(df)
+    # 画面で修正された最新のデータを反映
+    st.markdown("### 📋 Excelへ一括コピー")
+    st.write(
+        "下の枠内のデータ（数値データ＋時刻／ヘッダーなし）を全選択してコピー（Ctrl+C）し、Excelのセルにそのまま貼り付けてください（Ctrl+V）。"
+    )
 
-            # 【3. CSVダウンロードボタン】
-            csv_data = df.to_csv(index=False, encoding="utf-8-sig").encode(
-                "utf-8-sig"
-            )
-            st.download_button(
-                label="📥 CSVファイルとして保存",
-                data=csv_data,
-                file_name="blast_extracted_data.csv",
-                mime="text/csv",
-            )
+    # Excel出力用（「ファイル名」と「判定」列を除外）
+    export_df = edited_df.drop(columns=["ファイル名", "判定"], errors="ignore")
+    tsv_data = export_df.to_csv(index=False, header=False, sep="\t")
+    
+    st.code(tsv_data, language="text")
+
+    # CSVダウンロードボタン
+    csv_data = edited_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    st.download_button(
+        label="📥 CSVファイルとして保存",
+        data=csv_data,
+        file_name="blast_extracted_data.csv",
+        mime="text/csv",
+    )
