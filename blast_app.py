@@ -118,7 +118,7 @@ def check_outliers(df):
 
 
 def merge_rapsodo_data(blast_df, rapsodo_file, anchor_blast_index, max_time_diff_sec=30):
-    """時刻自動補正・Rapsodoデータの結合"""
+    """日付を無視し時間のみで時刻補正・Rapsodoデータの結合"""
     try:
         rap_df = pd.read_csv(rapsodo_file)
     except Exception as e:
@@ -135,10 +135,19 @@ def merge_rapsodo_data(blast_df, rapsodo_file, anchor_blast_index, max_time_diff
         st.warning("⚠️ RapsodoのCSV内に『Date』列が見つかりませんでした。")
         return blast_df
 
-    rap_df["_dt_orig"] = pd.to_datetime(rap_df[date_col], errors="coerce")
-    if rap_df["_dt_orig"].isna().all():
-        rap_df["_dt_orig"] = pd.to_datetime("2020-01-01 " + rap_df[date_col].astype(str), errors="coerce")
+    # RapsodoのDate列から「時間（HH:MM:SS）」だけを抽出して統一基準日(2020-01-01)を付与
+    def extract_time_str(val):
+        if pd.isna(val):
+            return None
+        val_s = str(val).strip()
+        # HH:MM:SS または HH:MM:SS.fff のパターンを抽出
+        match = re.search(r"(\d{1,2}:\d{2}:\d{2})", val_s)
+        return match.group(1) if match else None
 
+    rap_time_strs = rap_df[date_col].apply(extract_time_str)
+    rap_df["_dt_orig"] = pd.to_datetime("2020-01-01 " + rap_time_strs, errors="coerce")
+
+    # Blast側も同様に2020-01-01基準のDatetime化
     blast_df["_dt"] = pd.to_datetime("2020-01-01 " + blast_df["時刻"].astype(str), errors="coerce")
 
     valid_rap = rap_df.dropna(subset=["_dt_orig"]).sort_values("_dt_orig").reset_index(drop=True)
@@ -214,7 +223,6 @@ def render_time_series_chart(df):
         specs=[[{"secondary_y": True}], [{"secondary_y": True}]]
     )
 
-    # グラフ設定（名称, 単位, Row, Col, SecondY, Dash, Color）
     traces_config = [
         ("バットスピード", "(km/h)", 1, 1, False, None, "#1f77b4"),
         ("オンプレーン効率", "(%)", 1, 1, False, None, "#2ca02c"),
