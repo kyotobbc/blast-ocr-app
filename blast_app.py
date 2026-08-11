@@ -12,7 +12,7 @@ st.set_page_config(page_title="BLAST データ解析", layout="wide")
 st.title("BLAST データ解析")
 st.write("Blast Motion のスクショ画像をアップロードしてください。")
 
-# 2. EasyOCRの初期化（量子化オプションで高速化）
+# 2. EasyOCRの初期化
 @st.cache_resource
 def load_ocr():
     return easyocr.Reader(["en"], gpu=False, quantize=True)
@@ -31,13 +31,12 @@ BASE_CROP_AREAS = {
 
 
 def preprocess_for_ocr(crop_img):
-    """OCR精度と処理速度を両立した前処理"""
+    """OCR前処理"""
     if crop_img is None or crop_img.size == 0:
         return None
 
     gray = cv2.cvtColor(crop_img, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
-    # 拡大倍率を3倍から2倍に変更して処理速度を向上
     resized = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
 
     _, thresh = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -50,13 +49,13 @@ def preprocess_for_ocr(crop_img):
 
 
 def fix_numeric_format(val_str, metric_name):
-    """各項目の表示ルールに合わせたフォーマット整形"""
+    """各項目のフォーマット補正"""
     if not val_str:
-        return None
+        return ""
 
     digits_only = re.sub(r"[^\d-]", "", val_str)
     if not digits_only:
-        return None
+        return ""
 
     try:
         if metric_name == "スイング時間":
@@ -87,13 +86,13 @@ def fix_numeric_format(val_str, metric_name):
 
 
 def process_image(file_data):
-    """1枚の画像を処理する単体関数（並列化対応）"""
+    """画像から6項目のみ抽出"""
     uploaded_file, index = file_data
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
     img_h, img_w = open_cv_full.shape[:2]
 
-    results = {"_index": index, "ファイル名": uploaded_file.name}
+    results = {"_index": index}
     offset_y = -20
 
     for metric_name, (x1, y1, x2, y2) in BASE_CROP_AREAS.items():
@@ -113,7 +112,7 @@ def process_image(file_data):
         processed = preprocess_for_ocr(region)
 
         if processed is None:
-            results[metric_name] = None
+            results[metric_name] = ""
             continue
 
         ocr_out = reader.readtext(
@@ -127,7 +126,7 @@ def process_image(file_data):
         if match:
             results[metric_name] = fix_numeric_format(match.group(0), metric_name)
         else:
-            results[metric_name] = None
+            results[metric_name] = ""
 
     return results
 
@@ -143,16 +142,12 @@ if uploaded_files and st.button("読み取る"):
     total = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
-    status_text.text(f"高速解析中... (0/{total})")
+    status_text.text(f"解析中... (0/{total})")
 
-    # 並列度（ワーカー数）の設定: 画像枚数やサーバーコア数に応じて自動調整（最大4並列）
     max_workers = min(4, total)
     raw_results = []
-
-    # タスクの準備
     file_tasks = [(file, idx) for idx, file in enumerate(uploaded_files)]
 
-    # ThreadPoolExecutorによるマルチスレッド高速処理
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(process_image, task) for task in file_tasks]
         
@@ -160,24 +155,28 @@ if uploaded_files and st.button("読み取る"):
         for future in as_completed(futures):
             completed_count += 1
             raw_results.append(future.result())
-            status_text.text(f"高速解析中... ({completed_count}/{total})")
+            status_text.text(f"解析中... ({completed_count}/{total})")
             progress_bar.progress(completed_count / total)
 
     status_text.text("完了！")
     
-    # 元の順序にソートしてインデックス用キーを削除
+    # ソートして不要なインデックス削除
     raw_results.sort(key=lambda x: x["_index"])
-    for r in raw_results:
-        del r["_index"]
+    
+    # 6項目の値だけをカンマ区切りの文字列データとして整形
+    metric_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
+    csv_lines = []
+    for item in raw_results:
+        row_values = [str(item.get(k, "")) for k in metric_keys]
+        csv_lines.append(",".join(row_values))
 
-    st.session_state["parsed_df"] = pd.DataFrame(raw_results)
+    # 一括コピー用テキストをセッションに格納
+    st.session_state["raw_csv_text"] = "\n".join(csv_lines)
 
-# 結果の表表示
-if "parsed_df" in st.session_state:
-    st.subheader("【解析結果】")
-    st.data_editor(
-        st.session_state["parsed_df"],
-        num_rows="dynamic",
-        use_container_width=True,
-        key="data_editor",
-    )
+# 結果表示部
+if "raw_csv_text" in st.session_state:
+    st.subheader("【コピペ用データ】")
+    st.info("💡 右上のコピーボタンをクリックすると、そのままCSVファイルやExcelのセルに貼り付けられます。")
+    
+    # テキストエリア内に数値とカンマのみを表示（ヘッダー・ファイル名なし）
+    st.code(st.session_state["raw_csv_text"], language="text")
