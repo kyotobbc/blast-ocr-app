@@ -8,7 +8,7 @@ import streamlit as st
 
 # 1. ページ基本設定
 st.set_page_config(page_title="BLAST データ解析", layout="wide")
-st.title("BLAST データ解析 (6項目抽出・微調整機能付)")
+st.title("BLAST データ解析 (6項目抽出)")
 st.write("Blast Motion のスクショ画像をアップロードしてください。")
 
 # 2. EasyOCRの初期化
@@ -84,7 +84,7 @@ def fix_numeric_format(val_str, metric_name):
         return val_str
 
 
-def process_image(uploaded_file, offset_y=0, show_debug=False):
+def process_image(uploaded_file, offset_y=-20, show_debug=False):
     """画像切り出し・読み取り処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
@@ -94,15 +94,20 @@ def process_image(uploaded_file, offset_y=0, show_debug=False):
     debug_images = {}
 
     for metric_name, (x1, y1, x2, y2) in BASE_CROP_AREAS.items():
-        # オフセット適用（マイナスで上方向へ移動）
-        ny1 = max(0, y1 + offset_y)
-        ny2 = max(0, y2 + offset_y)
+        # オフセット適用（基本は -20px）
+        ny1 = y1 + offset_y
+        ny2 = y2 + offset_y
+
+        # パワーのみ「下側 2/3」を切り出す（上部 1/3 を削る）
+        if metric_name == "パワー":
+            box_height = ny2 - ny1
+            ny1 = int(ny1 + (box_height * (1 / 3)))  # 上側1/3分スタート位置を下げる
+
+        # 範囲外エラー防止のための安全制御
+        ny1 = max(0, min(ny1, img_h))
+        ny2 = max(0, min(ny2, img_h))
         nx1 = max(0, min(x1, img_w))
         nx2 = max(0, min(x2, img_w))
-
-        # 画像範囲を超えないように安全制御
-        ny1 = min(ny1, img_h)
-        ny2 = min(ny2, img_h)
 
         region = open_cv_full[ny1:ny2, nx1:nx2]
         processed = preprocess_for_ocr(region)
@@ -131,14 +136,13 @@ def process_image(uploaded_file, offset_y=0, show_debug=False):
 
 
 # --- サイドバー／画面設定 ---
-st.sidebar.header("⚙️ 座標切り出し位置の微調整")
-# デフォルトで「100px上に移動」に設定（スライダーで上下に動かせます）
+st.sidebar.header("⚙️ 座標切り出し位置設定")
 y_offset = st.sidebar.slider(
-    "縦方向の位置調整 (マイナスで上へ移動)",
-    min_value=-500,
-    max_value=200,
-    value=-100,
-    step=10
+    "縦方向の位置調整",
+    min_value=-100,
+    max_value=100,
+    value=-20,  # デフォルト -20 に設定
+    step=5
 )
 
 show_debug = st.sidebar.checkbox("【プレビュー表示】切り出し画像を画面で確認する", value=True)
@@ -161,7 +165,7 @@ if uploaded_files and st.button("読み取る"):
         raw_results.append(res)
 
         if show_debug and debug_imgs:
-            st.write(f"--- プレビュー (Yオフセット: {y_offset}px): {file.name} ---")
+            st.write(f"--- プレビュー (Yオフセット: {y_offset}px / パワー下部2/3補正): {file.name} ---")
             cols = st.columns(len(debug_imgs))
             for i, (k, img_crop) in enumerate(debug_imgs.items()):
                 with cols[i]:
