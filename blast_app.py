@@ -163,20 +163,19 @@ if uploaded_files and st.button("読み取る"):
     # ソートして不要なインデックス削除
     raw_results.sort(key=lambda x: x["_index"])
     
-    # 6項目の値だけをカンマ区切りの文字列データとして整形
+    # 6項目の値を「タブ（\t）」区切りの文字列データとして整形（Excel/スプレッドシートのセル分け対応）
     metric_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
-    csv_lines = []
+    tsv_lines = []
     for item in raw_results:
         row_values = [str(item.get(k, "")) for k in metric_keys]
-        csv_lines.append(",".join(row_values))
+        tsv_lines.append("\t".join(row_values))  # タブ区切りに変更
 
-    # 一括コピー用テキストをセッションに格納
-    st.session_state["raw_csv_text"] = "\n".join(csv_lines)
+    st.session_state["raw_tsv_text"] = "\n".join(tsv_lines)
 
 # 結果表示部
-if "raw_csv_text" in st.session_state:
-    st.subheader("【コピペ用データ】")
-    st.info("💡 右上のコピーボタンをクリックすると、そのままCSVファイルやExcelのセルに貼り付けられます。")
+if "raw_tsv_text" in st.session_state:
+    st.subheader("【セル分割対応 コピペ用データ】")
+    st.info("💡 右上のコピーボタンをクリックして、ExcelやGoogleスプレッドシートのセル（A1など）へそのまま貼り付けると、自動的に1文字（1数値）ずつセルに分かれます。")
     
-    # テキストエリア内に数値とカンマのみを表示（ヘッダー・ファイル名なし）
-    st.code(st.session_state["raw_csv_text"], language="text")
+    # タブ区切りテキストを表示
+    st.code(st.session_state["raw_tsv_text"], language="text")
