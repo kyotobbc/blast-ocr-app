@@ -1,3 +1,4 @@
+import gc
 import re
 import cv2
 import easyocr
@@ -6,14 +7,13 @@ import pandas as pd
 from PIL import Image
 import streamlit as st
 import streamlit.components.v1 as components
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 1. ページ基本設定
 st.set_page_config(page_title="BLAST データ解析", layout="wide")
 st.title("BLAST データ解析")
 st.write("Blast Motion のスクショ画像をアップロードしてください。")
 
-# 2. EasyOCRの初期化
+# 2. EasyOCRの初期化（軽量化設定）
 @st.cache_resource
 def load_ocr():
     return easyocr.Reader(["en"], gpu=False, quantize=True)
@@ -32,7 +32,7 @@ BASE_CROP_AREAS = {
 
 
 def preprocess_for_ocr(crop_img):
-    """OCR前処理"""
+    """OCR前処理（メモリ消費を極力抑える設定）"""
     if crop_img is None or crop_img.size == 0:
         return None
 
@@ -86,14 +86,13 @@ def fix_numeric_format(val_str, metric_name):
         return val_str
 
 
-def process_image(file_data):
-    """画像から6項目のみ抽出"""
-    uploaded_file, index = file_data
+def process_image(uploaded_file):
+    """1枚ずつ処理し、メモリを極力開放する"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
     img_h, img_w = open_cv_full.shape[:2]
 
-    results = {"_index": index}
+    results = {}
     offset_y = -20
 
     for metric_name, (x1, y1, x2, y2) in BASE_CROP_AREAS.items():
@@ -129,6 +128,11 @@ def process_image(file_data):
         else:
             results[metric_name] = ""
 
+    # 大きな画像データを明示的に解放
+    del open_cv_full
+    del img
+    gc.collect()
+
     return results
 
 
@@ -143,27 +147,18 @@ if uploaded_files and st.button("読み取る"):
     total = len(uploaded_files)
     progress_bar = st.progress(0)
     status_text = st.empty()
-    status_text.text(f"解析中... (0/{total})")
 
-    max_workers = min(4, total)
     raw_results = []
-    file_tasks = [(file, idx) for idx, file in enumerate(uploaded_files)]
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(process_image, task) for task in file_tasks]
-        
-        completed_count = 0
-        for future in as_completed(futures):
-            completed_count += 1
-            raw_results.append(future.result())
-            status_text.text(f"解析中... ({completed_count}/{total})")
-            progress_bar.progress(completed_count / total)
+    # メモリ超過を防ぐため、並列化せず1枚ずつ順番に処理
+    for idx, file in enumerate(uploaded_files, 1):
+        status_text.text(f"解析中... ({idx}/{total})")
+        res = process_image(file)
+        raw_results.append(res)
+        progress_bar.progress(idx / total)
 
     status_text.text("完了！")
-    
-    # ソートして不要なインデックス削除
-    raw_results.sort(key=lambda x: x["_index"])
-    
+
     # 6項目の値を「タブ（\t）」区切り文字列として整形
     metric_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
     tsv_lines = []
@@ -179,13 +174,10 @@ if uploaded_files and st.button("読み取る"):
 # 結果表示部
 if "raw_tsv_text" in st.session_state:
     st.subheader("【iPad対応 結果出力】")
-    
-    # 方法1: 専用のワンタップコピーボタン（iPadOS対応JavaScript）
+
     tsv_data = st.session_state["raw_tsv_text"]
-    
-    # JSで安全にクリップボードへ渡すためのエスケープ処理
     js_escaped_tsv = tsv_data.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-    
+
     html_code = f"""
     <div style="margin-bottom: 15px;">
         <button id="copyBtn" onclick="copyToClipboard()" style="
@@ -224,7 +216,7 @@ if "raw_tsv_text" in st.session_state:
                 document.execCommand('copy');
                 showSuccess();
             }} catch (err) {{
-                alert('コピーに失敗しました。下のテキスト枠から直接選択してください。');
+                alert('コピーに失敗しました。');
             }}
             document.body.removeChild(textArea);
         }}
@@ -239,7 +231,6 @@ if "raw_tsv_text" in st.session_state:
     """
     components.html(html_code, height=70)
 
-    # 方法2: CSVファイルとしてダウンロード（iPadでのファイル管理用）
     st.download_button(
         label="📥 CSVファイルとして保存",
         data=st.session_state["raw_csv_text"],
@@ -247,6 +238,5 @@ if "raw_tsv_text" in st.session_state:
         mime="text/csv",
     )
 
-    # テキスト形式の表示（手動コピー用バックアップ）
     with st.expander("テキストを直接確認・編集する場合はこちら"):
         st.code(st.session_state["raw_tsv_text"], language="text")
