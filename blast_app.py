@@ -8,8 +8,8 @@ import streamlit as st
 
 # 1. ページ基本設定
 st.set_page_config(page_title="BLAST データ解析", layout="wide")
-st.title("BLAST データ解析 (6項目抽出・自動スケール調整対応)")
-st.write("Blast Motion のスクショ画像をアップロードしてください。（複数枚一括処理対応）")
+st.title("BLAST データ解析 (6項目抽出・微調整機能付)")
+st.write("Blast Motion のスクショ画像をアップロードしてください。")
 
 # 2. EasyOCRの初期化
 @st.cache_resource
@@ -18,12 +18,8 @@ def load_ocr():
 
 reader = load_ocr()
 
-# 3. 基準画像サイズ（基準座標を定義した際の画像解像度: 1067 x 1300 付近）
-BASE_WIDTH = 1067
-BASE_HEIGHT = 1300
-
-# 基準座標 (x1, y1, x2, y2)
-CROP_AREAS = {
+# ベースとなる元の座標 (x1, y1, x2, y2)
+BASE_CROP_AREAS = {
     "バットスピード": (0, 860, 355, 1010),
     "アッパー度": (355, 860, 710, 1010),
     "オンプレーン効率": (710, 860, 1067, 1010),
@@ -34,9 +30,7 @@ CROP_AREAS = {
 
 
 def preprocess_for_ocr(crop_img):
-    """
-    OCR精度向上のための画像前処理
-    """
+    """OCR前処理"""
     if crop_img is None or crop_img.size == 0:
         return None
 
@@ -44,20 +38,17 @@ def preprocess_for_ocr(crop_img):
     h, w = gray.shape
     resized = cv2.resize(gray, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
 
-    # 二値化処理
     _, thresh = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 背景が黒・文字が白の場合は反転（白背景・黒文字へ統一）
     if np.mean(thresh) < 127:
         thresh = cv2.bitwise_not(thresh)
 
-    # 外枠余白（パディング）追加
     padded = cv2.copyMakeBorder(thresh, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=[255, 255, 255])
     return padded
 
 
 def fix_numeric_format(val_str, metric_name):
-    """数値フォーマット補正処理"""
+    """数値フォーマット補正"""
     if not val_str:
         return None
 
@@ -93,30 +84,27 @@ def fix_numeric_format(val_str, metric_name):
         return val_str
 
 
-def process_image(uploaded_file, show_debug=False):
-    """画像読み取り・解析メイン処理（画像サイズに応じた自動スケール補正付）"""
+def process_image(uploaded_file, offset_y=0, show_debug=False):
+    """画像切り出し・読み取り処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
-
     img_h, img_w = open_cv_full.shape[:2]
-    
-    # 基準サイズとの比率計算（解像度が異なるスマホ画像でも座標を自動追従）
-    scale_x = img_w / BASE_WIDTH
-    scale_y = img_h / BASE_HEIGHT
 
     results = {"ファイル名": uploaded_file.name}
     debug_images = {}
 
-    for metric_name, (x1, y1, x2, y2) in CROP_AREAS.items():
-        # 画像解像度に合わせて座標をスケーリング
-        sx1 = int(x1 * scale_x)
-        sy1 = int(y1 * scale_y)
-        sx2 = int(x2 * scale_x)
-        sy2 = int(y2 * scale_y)
+    for metric_name, (x1, y1, x2, y2) in BASE_CROP_AREAS.items():
+        # オフセット適用（マイナスで上方向へ移動）
+        ny1 = max(0, y1 + offset_y)
+        ny2 = max(0, y2 + offset_y)
+        nx1 = max(0, min(x1, img_w))
+        nx2 = max(0, min(x2, img_w))
 
-        # 画像切り出し [y1:y2, x1:x2]
-        region = open_cv_full[sy1:sy2, sx1:sx2]
+        # 画像範囲を超えないように安全制御
+        ny1 = min(ny1, img_h)
+        ny2 = min(ny2, img_h)
 
+        region = open_cv_full[ny1:ny2, nx1:nx2]
         processed = preprocess_for_ocr(region)
 
         if processed is None:
@@ -126,7 +114,6 @@ def process_image(uploaded_file, show_debug=False):
         if show_debug:
             debug_images[metric_name] = processed
 
-        # OCR実行
         ocr_out = reader.readtext(
             processed,
             detail=0,
@@ -143,14 +130,24 @@ def process_image(uploaded_file, show_debug=False):
     return results, debug_images
 
 
-# --- 画面UI ---
+# --- サイドバー／画面設定 ---
+st.sidebar.header("⚙️ 座標切り出し位置の微調整")
+# デフォルトで「100px上に移動」に設定（スライダーで上下に動かせます）
+y_offset = st.sidebar.slider(
+    "縦方向の位置調整 (マイナスで上へ移動)",
+    min_value=-500,
+    max_value=200,
+    value=-100,
+    step=10
+)
+
+show_debug = st.sidebar.checkbox("【プレビュー表示】切り出し画像を画面で確認する", value=True)
+
 uploaded_files = st.file_uploader(
     "BLASTのスクショ画像を選択（複数選択可）",
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
 )
-
-show_debug = st.checkbox("【確認用】切り出し後のプレビュー画像（デバッグ画像）を表示する")
 
 if uploaded_files and st.button("読み取る"):
     raw_results = []
@@ -160,12 +157,11 @@ if uploaded_files and st.button("読み取る"):
 
     for idx, file in enumerate(uploaded_files, 1):
         status_text.text(f"🚀 解析中 ({idx}/{total}): {file.name}")
-        res, debug_imgs = process_image(file, show_debug=show_debug)
+        res, debug_imgs = process_image(file, offset_y=y_offset, show_debug=show_debug)
         raw_results.append(res)
 
-        # プレビュー表示（use_container_width=True に修正済み）
         if show_debug and debug_imgs:
-            st.write(f"--- プレビュー: {file.name} (元サイズ: {Image.open(file).size[0]}x{Image.open(file).size[1]}px) ---")
+            st.write(f"--- プレビュー (Yオフセット: {y_offset}px): {file.name} ---")
             cols = st.columns(len(debug_imgs))
             for i, (k, img_crop) in enumerate(debug_imgs.items()):
                 with cols[i]:
