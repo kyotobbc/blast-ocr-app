@@ -8,7 +8,7 @@ import streamlit as st
 
 # 1. ページ基本設定
 st.set_page_config(page_title="BLAST データ解析", layout="wide")
-st.title("BLAST データ解析 (6項目抽出)")
+st.title("BLAST データ解析")
 st.write("Blast Motion のスクショ画像をアップロードしてください。")
 
 # 2. EasyOCRの初期化
@@ -18,7 +18,7 @@ def load_ocr():
 
 reader = load_ocr()
 
-# ベースとなる元の座標 (x1, y1, x2, y2)
+# 各項目の基本座標 (x1, y1, x2, y2)
 BASE_CROP_AREAS = {
     "バットスピード": (0, 860, 355, 1010),
     "アッパー度": (355, 860, 710, 1010),
@@ -30,7 +30,7 @@ BASE_CROP_AREAS = {
 
 
 def preprocess_for_ocr(crop_img):
-    """OCR前処理"""
+    """OCR精度向上のための前処理"""
     if crop_img is None or crop_img.size == 0:
         return None
 
@@ -48,7 +48,7 @@ def preprocess_for_ocr(crop_img):
 
 
 def fix_numeric_format(val_str, metric_name):
-    """数値フォーマット補正"""
+    """各項目の表示ルールに合わせたフォーマット整形"""
     if not val_str:
         return None
 
@@ -57,13 +57,16 @@ def fix_numeric_format(val_str, metric_name):
         return None
 
     try:
+        # スイング時間: 読み取った数字を 0.XX に変換
         if metric_name == "スイング時間":
             num = int(re.sub(r"\D", "", val_str))
             return round(num / 100.0, 2)
 
+        # アッパー度 / オンプレーン効率: 整数
         elif metric_name in ["アッパー度", "オンプレーン効率"]:
             return int(float(val_str))
 
+        # バットスピード / 加速度: 小数点以下1桁
         elif metric_name in ["バットスピード", "加速度"]:
             if "." not in val_str and len(digits_only) >= 2:
                 val = float(f"{digits_only[:-1]}.{digits_only[-1]}")
@@ -71,6 +74,7 @@ def fix_numeric_format(val_str, metric_name):
                 val = float(val_str)
             return round(val, 1)
 
+        # パワー: 小数点以下2桁
         elif metric_name == "パワー":
             if "." not in val_str and len(digits_only) >= 3:
                 val = float(f"{digits_only[:-2]}.{digits_only[-2:]}")
@@ -84,26 +88,24 @@ def fix_numeric_format(val_str, metric_name):
         return val_str
 
 
-def process_image(uploaded_file, offset_y=-20, show_debug=False):
-    """画像切り出し・読み取り処理"""
+def process_image(uploaded_file):
+    """画像から6項目を抽出し数値化する処理"""
     img = Image.open(uploaded_file).convert("RGB")
     open_cv_full = np.array(img, dtype=np.uint8)
     img_h, img_w = open_cv_full.shape[:2]
 
     results = {"ファイル名": uploaded_file.name}
-    debug_images = {}
+    offset_y = -20  # 最適化済みのYオフセット
 
     for metric_name, (x1, y1, x2, y2) in BASE_CROP_AREAS.items():
-        # オフセット適用（基本は -20px）
         ny1 = y1 + offset_y
         ny2 = y2 + offset_y
 
-        # パワーのみ「下側 2/3」を切り出す（上部 1/3 を削る）
+        # パワーは数値部分（下側 2/3）のみ抽出
         if metric_name == "パワー":
             box_height = ny2 - ny1
-            ny1 = int(ny1 + (box_height * (1 / 3)))  # 上側1/3分スタート位置を下げる
+            ny1 = int(ny1 + (box_height * (1 / 3)))
 
-        # 範囲外エラー防止のための安全制御
         ny1 = max(0, min(ny1, img_h))
         ny2 = max(0, min(ny2, img_h))
         nx1 = max(0, min(x1, img_w))
@@ -115,9 +117,6 @@ def process_image(uploaded_file, offset_y=-20, show_debug=False):
         if processed is None:
             results[metric_name] = None
             continue
-
-        if show_debug:
-            debug_images[metric_name] = processed
 
         ocr_out = reader.readtext(
             processed,
@@ -132,23 +131,12 @@ def process_image(uploaded_file, offset_y=-20, show_debug=False):
         else:
             results[metric_name] = None
 
-    return results, debug_images
+    return results
 
 
-# --- サイドバー／画面設定 ---
-st.sidebar.header("⚙️ 座標切り出し位置設定")
-y_offset = st.sidebar.slider(
-    "縦方向の位置調整",
-    min_value=-100,
-    max_value=100,
-    value=-20,  # デフォルト -20 に設定
-    step=5
-)
-
-show_debug = st.sidebar.checkbox("【プレビュー表示】切り出し画像を画面で確認する", value=True)
-
+# --- 画面UI ---
 uploaded_files = st.file_uploader(
-    "BLASTのスクショ画像を選択（複数選択可）",
+    "画像ファイルを選択（複数選択可）",
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
 )
@@ -160,23 +148,15 @@ if uploaded_files and st.button("読み取る"):
     status_text = st.empty()
 
     for idx, file in enumerate(uploaded_files, 1):
-        status_text.text(f"🚀 解析中 ({idx}/{total}): {file.name}")
-        res, debug_imgs = process_image(file, offset_y=y_offset, show_debug=show_debug)
+        status_text.text(f"解析中... ({idx}/{total})")
+        res = process_image(file)
         raw_results.append(res)
-
-        if show_debug and debug_imgs:
-            st.write(f"--- プレビュー (Yオフセット: {y_offset}px / パワー下部2/3補正): {file.name} ---")
-            cols = st.columns(len(debug_imgs))
-            for i, (k, img_crop) in enumerate(debug_imgs.items()):
-                with cols[i]:
-                    st.image(img_crop, caption=k, use_container_width=True)
-
         progress_bar.progress(idx / total)
 
-    if raw_results:
-        status_text.text("✅ 解析完了！")
-        st.session_state["parsed_df"] = pd.DataFrame(raw_results)
+    status_text.text("完了！")
+    st.session_state["parsed_df"] = pd.DataFrame(raw_results)
 
+# 結果の表表示
 if "parsed_df" in st.session_state:
     st.subheader("【解析結果】")
     st.data_editor(
