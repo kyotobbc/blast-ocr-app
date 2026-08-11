@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import streamlit as st
+import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 1. ページ基本設定
@@ -163,19 +164,89 @@ if uploaded_files and st.button("読み取る"):
     # ソートして不要なインデックス削除
     raw_results.sort(key=lambda x: x["_index"])
     
-    # 6項目の値を「タブ（\t）」区切りの文字列データとして整形（Excel/スプレッドシートのセル分け対応）
+    # 6項目の値を「タブ（\t）」区切り文字列として整形
     metric_keys = ["バットスピード", "アッパー度", "オンプレーン効率", "加速度", "スイング時間", "パワー"]
     tsv_lines = []
+    csv_lines = []
     for item in raw_results:
         row_values = [str(item.get(k, "")) for k in metric_keys]
-        tsv_lines.append("\t".join(row_values))  # タブ区切りに変更
+        tsv_lines.append("\t".join(row_values))
+        csv_lines.append(",".join(row_values))
 
     st.session_state["raw_tsv_text"] = "\n".join(tsv_lines)
+    st.session_state["raw_csv_text"] = "\n".join(csv_lines)
 
 # 結果表示部
 if "raw_tsv_text" in st.session_state:
-    st.subheader("【セル分割対応 コピペ用データ】")
-    st.info("💡 右上のコピーボタンをクリックして、ExcelやGoogleスプレッドシートのセル（A1など）へそのまま貼り付けると、自動的に1文字（1数値）ずつセルに分かれます。")
+    st.subheader("【iPad対応 結果出力】")
     
-    # タブ区切りテキストを表示
-    st.code(st.session_state["raw_tsv_text"], language="text")
+    # 方法1: 専用のワンタップコピーボタン（iPadOS対応JavaScript）
+    tsv_data = st.session_state["raw_tsv_text"]
+    
+    # JSで安全にクリップボードへ渡すためのエスケープ処理
+    js_escaped_tsv = tsv_data.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    
+    html_code = f"""
+    <div style="margin-bottom: 15px;">
+        <button id="copyBtn" onclick="copyToClipboard()" style="
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        ">📋 クリップボードにコピー（iPad推奨）</button>
+        <span id="copyMsg" style="margin-left: 10px; color: #4CAF50; font-weight: bold;"></span>
+    </div>
+
+    <script>
+    function copyToClipboard() {{
+        const text = `{js_escaped_tsv}`;
+        
+        if (navigator.clipboard && window.isSecureContext) {{
+            navigator.clipboard.writeText(text).then(showSuccess).catch(fallbackCopy);
+        }} else {{
+            fallbackCopy();
+        }}
+
+        function fallbackCopy() {{
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-999999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {{
+                document.execCommand('copy');
+                showSuccess();
+            }} catch (err) {{
+                alert('コピーに失敗しました。下のテキスト枠から直接選択してください。');
+            }}
+            document.body.removeChild(textArea);
+        }}
+
+        function showSuccess() {{
+            const msg = document.getElementById("copyMsg");
+            msg.innerText = "✓ コピーしました！";
+            setTimeout(() => {{ msg.innerText = ""; }}, 3000);
+        }}
+    }}
+    </script>
+    """
+    components.html(html_code, height=70)
+
+    # 方法2: CSVファイルとしてダウンロード（iPadでのファイル管理用）
+    st.download_button(
+        label="📥 CSVファイルとして保存",
+        data=st.session_state["raw_csv_text"],
+        file_name="blast_data.csv",
+        mime="text/csv",
+    )
+
+    # テキスト形式の表示（手動コピー用バックアップ）
+    with st.expander("テキストを直接確認・編集する場合はこちら"):
+        st.code(st.session_state["raw_tsv_text"], language="text")
